@@ -1,0 +1,5 @@
+{
+  "name": "Tạo ảnh AI nhất quán",
+  "description": "Một ứng dụng để tạo ra hình ảnh các nhân vật nhất quán trong các bối cảnh khác nhau bằng AI. Tải lên hình ảnh tham chiếu cho các nhân vật và nền, cung cấp một câu lệnh và tạo ra nội dung hình ảnh mới.",
+  "requestFramePermissions": []
+}
