@@ -1,25 +1,21 @@
-import { GoogleGenAI, Modality, Part } from "@google/genai";
+import { GenerateContentResponse } from "@google/genai";
 
-// Ensure process.env.API_KEY is available. In a real app, this would be handled by the build environment.
-// For this example, we'll assume it's set. If not, replace it with your key for testing, but don't commit it.
-const API_KEY = process.env.API_KEY;
-
-if (!API_KEY) {
-  // A real app should handle this more gracefully.
-  console.error("API_KEY environment variable not set.");
-}
-
-const ai = new GoogleGenAI({ apiKey: API_KEY! });
-
-function dataUrlToGeminiPart(dataUrl: string): Part {
-  const [header, data] = dataUrl.split(',');
-  const mimeType = header.match(/:(.*?);/)?.[1] || 'image/png';
-  return {
-    inlineData: {
-      mimeType,
-      data,
+// Hàm này sẽ gọi đến Netlify function của chúng ta
+async function callNetlifyFunction(type: 'image' | 'video', payload: any) {
+  const response = await fetch('/.netlify/functions/generate-content', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
     },
-  };
+    body: JSON.stringify({ type, payload }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: 'Lỗi không xác định từ server function.' }));
+    throw new Error(errorData.error || `Lỗi HTTP: ${response.status}`);
+  }
+
+  return response.json();
 }
 
 export async function generateImage(
@@ -28,42 +24,12 @@ export async function generateImage(
   sceneImage: string | null
 ): Promise<string> {
   try {
-    const parts: Part[] = [];
-    let fullPrompt = "";
-
-    if (sceneImage) {
-      // If a scene is provided, it's the base image. Add it first.
-      parts.push(dataUrlToGeminiPart(sceneImage));
-      // Then add character references.
-      characterImages.forEach(img => parts.push(dataUrlToGeminiPart(img)));
-      
-      const characterRef = characterImages.length > 1 
-        ? `các nhân vật từ ${characterImages.length} ảnh tham chiếu tiếp theo` 
-        : `nhân vật từ ảnh tham chiếu tiếp theo`;
-
-      fullPrompt = `Sử dụng ảnh đầu tiên làm bối cảnh nền. Thêm ${characterRef} vào bối cảnh này. Mô tả hành động và bố cục: "${prompt}". Giữ ngoại hình nhân vật nhất quán với ảnh tham chiếu. Tạo ảnh chất lượng 4K với tỷ lệ khung hình 9:16.`;
-    } else {
-      // If no scene, the characters are the main subject.
-      characterImages.forEach(img => parts.push(dataUrlToGeminiPart(img)));
-
-      const characterRef = characterImages.length > 1 ? 'các nhân vật' : 'nhân vật';
-
-      fullPrompt = `Tạo một ảnh mới với ${characterRef} từ các ảnh tham chiếu được cung cấp. Mô tả bối cảnh, hành động và bố cục: "${prompt}". Giữ ngoại hình nhân vật nhất quán. Tạo ảnh chất lượng 4K với tỷ lệ khung hình 9:16.`;
-    }
-
-    // Add the consolidated text prompt at the end
-    parts.push({ text: fullPrompt });
-    
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image-preview',
-      contents: {
-        parts: parts,
-      },
-      config: {
-        responseModalities: [Modality.IMAGE, Modality.TEXT],
-      },
+    const response: GenerateContentResponse = await callNetlifyFunction('image', {
+      prompt,
+      characterImages,
+      sceneImage,
     });
-
+    
     if (response.promptFeedback?.blockReason) {
         throw new Error(`Yêu cầu bị chặn vì lý do an toàn: ${response.promptFeedback.blockReason}. Vui lòng điều chỉnh câu lệnh hoặc ảnh đầu vào.`);
     }
@@ -85,9 +51,8 @@ export async function generateImage(
       throw new Error(detailedError);
     }
   } catch (error) {
-    console.error("Error calling Gemini API:", error);
+    console.error("Error calling Netlify function for image generation:", error);
     if (error instanceof Error) {
-        // Re-throw the specific error message we constructed or caught.
         throw new Error(error.message);
     }
     throw new Error('Đã xảy ra lỗi không xác định trong quá trình tạo ảnh.');
@@ -99,35 +64,17 @@ export async function generateVideo(
   prompt: string
 ): Promise<string> {
   try {
-    const [, data] = base64Image.split(',');
-    const [header] = base64Image.split(';');
-    const mimeType = header.split(':')[1] || 'image/png';
-
-    let operation = await ai.models.generateVideos({
-      model: 'veo-2.0-generate-001',
-      prompt: prompt,
-      image: {
-        imageBytes: data,
-        mimeType: mimeType,
-      },
-      config: {
-        numberOfVideos: 1,
-      },
+    const { downloadLink } = await callNetlifyFunction('video', {
+      base64Image,
+      prompt,
     });
 
-    while (!operation.done) {
-      // Wait for 10 seconds before checking again
-      await new Promise(resolve => setTimeout(resolve, 10000));
-      operation = await ai.operations.getVideosOperation({ operation: operation });
-    }
-
-    const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
     if (!downloadLink) {
       throw new Error("Tạo video thành công nhưng không có liên kết tải xuống.");
     }
     
-    // Fetch the video and convert to a data URL
-    const videoResponse = await fetch(`${downloadLink}&key=${API_KEY}`);
+    // Fetch the video from the signed URL and convert to a blob URL
+    const videoResponse = await fetch(downloadLink);
     if (!videoResponse.ok) {
         throw new Error(`Không thể tải video: ${videoResponse.statusText}`);
     }
@@ -135,7 +82,7 @@ export async function generateVideo(
     return URL.createObjectURL(videoBlob);
 
   } catch (error) {
-    console.error("Error calling VEO API:", error);
+    console.error("Error calling Netlify function for video generation:", error);
     if (error instanceof Error) {
       throw new Error(error.message);
     }
